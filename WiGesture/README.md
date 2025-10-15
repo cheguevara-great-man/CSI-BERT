@@ -4,6 +4,10 @@
 
 
 
+**Notice: ** We apologize that due to a device error, we missed the waiver right of user5 in the dynamic part of the dataset.
+
+
+
 ## 1. Dataset Overview
 
 WiGesture dataset contains data related to gesture recognition and people id identification in a meeting room scenario. The dataset provides synchronised CSI, RSSI, and timestamp for each sample. It can be used for research on **WiFi-based human gesture recognition and people id identification**.
