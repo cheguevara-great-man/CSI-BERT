@@ -4,7 +4,6 @@ import argparse
 import tqdm
 import torch
 from dataset import Widar_digit_amp_dataset
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import copy
@@ -81,7 +80,15 @@ def main():
         use_mask_0=args.use_mask_0,
         is_rec=1,
     )
-    train_data,valid_data=train_test_split(train_data, test_size=0.1, random_state=113)
+    valid_data=Widar_digit_amp_dataset(
+        root_dir=args.data_path,
+        split="test",
+        sample_rate=args.sample_rate,
+        sample_method=args.sample_method,
+        interpolation_method=args.interpolation_method,
+        use_mask_0=args.use_mask_0,
+        is_rec=1,
+    )
     # train_data,valid_data=load_data(train_prop=0.1)
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     valid_loader = DataLoader(valid_data, batch_size=args.batch_size, shuffle=False)
@@ -146,11 +153,11 @@ def main():
             loss_mask = loss_mask.to(device)
             attn_mask = (x[:, :, 0] != pad[0]).float().to(device)  # (batch, seq_len)
             if args.time_embedding:
-                y = model(input, attn_mask)
-                # y = model(input, None)
-            else:
                 y = model(input, attn_mask, timestamp)
                 # y = model(input, None, timestamp)
+            else:
+                y = model(input, attn_mask)
+                # y = model(input, None)
 
             if args.normal:
                 y = y * std + avg
@@ -298,11 +305,11 @@ def main():
             loss_mask = loss_mask.to(device)
             attn_mask = (x[:, :, 0] != pad[0]).float().to(device)  # (batch, seq_len)
             if args.time_embedding:
-                y = model(input, attn_mask)
-                # y = model(input, None)
-            else:
                 y = model(input, attn_mask, timestamp)
                 # y = model(input, None, timestamp)
+            else:
+                y = model(input, attn_mask)
+                # y = model(input, None)
 
             if args.normal:
                 y = y * std + avg

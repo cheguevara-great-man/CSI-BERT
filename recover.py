@@ -92,9 +92,9 @@ def main():
         input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
         input[x==pad[0]]=rand_word[x==pad[0]]
         if args.time_embedding:
-            y = model(input, None)
-        else:
             y = model(input, None, timestamp)
+        else:
+            y = model(input, None)
         if args.normal:
             y = y * std + avg
 

@@ -1,4 +1,4 @@
-from model import CSIBERT,Sequence_Classifier,Classification
+from model import CSIBERT, Token_Classifier
 from transformers import BertConfig
 import argparse
 import tqdm
@@ -8,9 +8,101 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 import copy
 import numpy as np
-from sklearn.model_selection import train_test_split
 
-pad=np.array([-1000]*52)
+pad = -1000
+
+
+class Block(nn.Module):
+    expansion = 1
+    def __init__(self, in_channels, out_channels, i_downsample=None, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, stride=stride, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.i_downsample = i_downsample
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        identity = x
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.bn2(self.conv2(x))
+        if self.i_downsample is not None:
+            identity = self.i_downsample(identity)
+        x = x + identity
+        return self.relu(x)
+
+
+class WidarDigit_ResNet(nn.Module):
+    def __init__(self, ResBlock, layer_list, num_classes: int = 10):
+        super().__init__()
+        self.in_channels = 64
+
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU()
+        self.max_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.layer1 = self._make_layer(ResBlock, layer_list[0], planes=64)
+        self.layer2 = self._make_layer(ResBlock, layer_list[1], planes=128, stride=2)
+        self.layer3 = self._make_layer(ResBlock, layer_list[2], planes=256, stride=2)
+        self.layer4 = self._make_layer(ResBlock, layer_list[3], planes=512, stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512 * ResBlock.expansion, num_classes)
+
+    def forward(self, x):
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.max_pool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = x.reshape(x.shape[0], -1)
+        return self.fc(x)
+
+    def _make_layer(self, ResBlock, blocks, planes, stride=1):
+        i_downsample = None
+        layers = []
+        if stride != 1 or self.in_channels != planes * ResBlock.expansion:
+            i_downsample = nn.Sequential(
+                nn.Conv2d(self.in_channels, planes * ResBlock.expansion, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(planes * ResBlock.expansion),
+            )
+        layers.append(ResBlock(self.in_channels, planes, i_downsample=i_downsample, stride=stride))
+        self.in_channels = planes * ResBlock.expansion
+        for _ in range(blocks - 1):
+            layers.append(ResBlock(self.in_channels, planes))
+        return nn.Sequential(*layers)
+
+
+def WidarDigit_ResNet18(num_classes: int = 10):
+    return WidarDigit_ResNet(Block, [2, 2, 2, 2], num_classes=num_classes)
+
+
+class Recon_Classifier_Pipeline(nn.Module):
+    def __init__(self, reconstructor, classifier, carrier_dim=90):
+        super().__init__()
+        self.reconstructor = reconstructor
+        self.classifier = classifier
+        self.carrier_dim = carrier_dim
+
+    def forward(self, input_ids, attn_mask, mask_keep, timestamp):
+        with torch.no_grad():
+            x_pred = self.reconstructor(input_ids, attn_mask, timestamp)
+
+        if mask_keep.dim() == 2:
+            mask_keep = mask_keep.unsqueeze(2).repeat(1, 1, self.carrier_dim)
+
+        x_rec = input_ids * mask_keep + x_pred * (1 - mask_keep)
+        logits = self.classifier(x_rec)
+        return logits
 
 def get_args():
     parser = argparse.ArgumentParser(description='')
@@ -34,7 +126,7 @@ def get_args():
     parser.add_argument('--epoch', type=int, default=30)
     parser.add_argument('--class_num', type=int, default=6) #action:6, people:8
     parser.add_argument('--task', type=str, default="action") # "action" or "people"
-    parser.add_argument("--path", type=str, default='./csibert_pretrain.pth')
+    parser.add_argument("--path", type=str, default='./pretrain.pth')
     parser.add_argument("--no_pretrain", action="store_true",default=False)
     parser.add_argument('--data_path', type=str, default="/home/cxy/data/code/datasets/sense-fi/Widar_digit")
     parser.add_argument('--sample_rate', type=float, default=0.2)
@@ -51,18 +143,22 @@ def main():
     device_name = "cuda:"+args.cuda
     device = torch.device(device_name if torch.cuda.is_available() and not args.cpu else 'cpu')
     bertconfig=BertConfig(max_position_embeddings=args.max_len, hidden_size=args.hs, position_embedding_type=args.position_embedding_type,num_hidden_layers=args.layers,num_attention_heads=args.heads, intermediate_size=args.intermediate_size)
-    csibert=CSIBERT(bertconfig,args.carrier_dim,args.carrier_attn, args.time_embedding)
+    csibert = CSIBERT(bertconfig, args.carrier_dim, args.carrier_attn, args.time_embedding)
+    reconstructor = Token_Classifier(csibert, args.carrier_dim)
     if not args.no_pretrain:
-        csibert.load_state_dict(torch.load(args.path))
-    # model=Sequence_Classifier(csibert,args.class_num)
-    model = Classification(csibert, args.class_num)
-    model=model.to(device)
+        reconstructor.load_state_dict(torch.load(args.path, map_location=device))
+    for param in reconstructor.parameters():
+        param.requires_grad = False
+    reconstructor.eval()
 
+    classifier = WidarDigit_ResNet18(num_classes=args.class_num)
+    model = Recon_Classifier_Pipeline(reconstructor, classifier, carrier_dim=args.carrier_dim)
+    model = model.to(device)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('total parameters:', total_params)
-    optim = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=0.01)
-    data = Widar_digit_amp_dataset(
+    optim = torch.optim.Adam(model.classifier.parameters(), lr=args.lr, weight_decay=0.01)
+    train_data = Widar_digit_amp_dataset(
         root_dir=args.data_path,
         split="train",
         sample_rate=args.sample_rate,
@@ -71,7 +167,15 @@ def main():
         use_mask_0=args.use_mask_0,
         is_rec=1,
     )
-    train_data,test_data=train_test_split(data, test_size=0.1, random_state=42)
+    test_data = Widar_digit_amp_dataset(
+        root_dir=args.data_path,
+        split="test",
+        sample_rate=args.sample_rate,
+        sample_method=args.sample_method,
+        interpolation_method=args.interpolation_method,
+        use_mask_0=args.use_mask_0,
+        is_rec=1,
+    )
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
     loss_func = nn.CrossEntropyLoss()
@@ -82,39 +186,30 @@ def main():
     while True:
         j+=1
         model.train()
+        model.reconstructor.eval()
         torch.set_grad_enabled(True)
-        if args.freeze:
-            csibert.eval()
-            for param in csibert.parameters():
-                if param.requires_grad:
-                    param.requires_grad = False
         loss_list=[]
         acc_list=[]
         pbar = tqdm.tqdm(train_loader, disable=False)
         for x_in, mask_in, label_in, _, timestamp in pbar:
             x = x_in.to(device)
             timestamp = timestamp.to(device)
-            if args.task=="action":
-                label = label_in.to(device)
-            elif args.task=="people":
-                label = label_in.to(device)
-            else:
-                print("ERROR")
-                exit(-1)
+            label = label_in.to(device)
             input = x.clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
-            input[input == pad[0]] = -pad[0]
+            input[input == pad] = -pad
             min_values, _ = torch.min(input, dim=-2, keepdim=True)
-            input[input == -pad[0]] = pad[0]
+            input[input == -pad] = pad
 
-            non_pad = mask_in.to(device).float()
+            mask_keep = mask_in.to(device).float()
+            non_pad = mask_keep
             if non_pad.dim() == 3:
                 non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
-            avg[input == pad[0]] = 0
+            avg[input == pad] = 0
             avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
             std = (input - avg) ** 2
-            std[input == pad[0]] = 0
+            std[input == pad] = 0
             std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
             std = torch.sqrt(std)
 
@@ -122,7 +217,7 @@ def main():
                 input = (input - avg) / (std+1e-5)
 
             batch_size,seq_len,carrier_num=input.shape
-            attn_mask = (x[:, :, 0] != pad[0]).float().to(device)
+            attn_mask = torch.ones_like(non_pad)
             if args.normal:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
             else:
@@ -130,11 +225,8 @@ def main():
             loss_mask = 1.0 - non_pad
             loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
             input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
-            input[x==pad[0]]=rand_word[x==pad[0]]
-            if args.time_embedding:
-                y = model(input, attn_mask)
-            else:
-                y = model(input, attn_mask, timestamp)
+            input[x==pad]=rand_word[x==pad]
+            y = model(input, attn_mask, mask_keep, timestamp)
 
             loss = loss_func(y,label)
             output = torch.argmax(y, dim=-1)
@@ -160,27 +252,22 @@ def main():
         for x_in, mask_in, label_in, _, timestamp in pbar:
             x = x_in.to(device)
             timestamp = timestamp.to(device)
-            if args.task=="action":
-                label = label_in.to(device)
-            elif args.task=="people":
-                label = label_in.to(device)
-            else:
-                print("ERROR")
-                exit(-1)
+            label = label_in.to(device)
             input = x.clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
-            input[input == pad[0]] = -pad[0]
+            input[input == pad] = -pad
             min_values, _ = torch.min(input, dim=-2, keepdim=True)
-            input[input == -pad[0]] = pad[0]
+            input[input == -pad] = pad
 
-            non_pad = mask_in.to(device).float()
+            mask_keep = mask_in.to(device).float()
+            non_pad = mask_keep
             if non_pad.dim() == 3:
                 non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
-            avg[input == pad[0]] = 0
+            avg[input == pad] = 0
             avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
             std = (input - avg) ** 2
-            std[input == pad[0]] = 0
+            std[input == pad] = 0
             std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
             std = torch.sqrt(std)
 
@@ -188,7 +275,7 @@ def main():
                 input = (input - avg) / (std+1e-5)
 
             batch_size,seq_len,carrier_num=input.shape
-            attn_mask = (x[:, :, 0] != pad[0]).float().to(device)
+            attn_mask = torch.ones_like(non_pad)
             if args.normal:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
             else:
@@ -196,11 +283,8 @@ def main():
             loss_mask = 1.0 - non_pad
             loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
             input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
-            input[x==pad[0]]=rand_word[x==pad[0]]
-            if args.time_embedding:
-                y = model(input, attn_mask)
-            else:
-                y = model(input, attn_mask, timestamp)
+            input[x==pad]=rand_word[x==pad]
+            y = model(input, attn_mask, mask_keep, timestamp)
 
             loss = loss_func(y,label)
             output = torch.argmax(y, dim=-1)
