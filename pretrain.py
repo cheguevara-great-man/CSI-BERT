@@ -38,6 +38,10 @@ def get_args():
     parser.add_argument('--epoch', type=int, default=30)
     parser.add_argument('--data_path', type=str, default="/home/cxy/data/code/datasets/sense-fi/Widar_digit")
     parser.add_argument('--parameter', type=str, default=None)
+    parser.add_argument('--sample_rate', type=float, default=0.2)
+    parser.add_argument('--sample_method', type=str, default="equidistant")
+    parser.add_argument('--interpolation_method', type=str, default="linear")
+    parser.add_argument('--use_mask_0', type=int, default=1)
     args = parser.parse_args()
     return args
 
@@ -71,8 +75,10 @@ def main():
     train_data=Widar_digit_amp_dataset(
         root_dir=args.data_path,
         split="train",
-        sample_rate=0.2,
-        use_mask_0=1,
+        sample_rate=args.sample_rate,
+        sample_method=args.sample_method,
+        interpolation_method=args.interpolation_method,
+        use_mask_0=args.use_mask_0,
         is_rec=1,
     )
     train_data,valid_data=train_test_split(train_data, test_size=0.1, random_state=113)

@@ -92,42 +92,66 @@ def load_data(magnitude_path="./data/magnitude.npy",train_prop=None):
 
 
 def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolation_method, is_rec=0):
+    """
+    Signal resampling/interpolation for input x shaped (T, F).
+    """
     if sample_rate >= 1.0:
-        mask = np.ones((x.shape[0],), dtype=np.float32)
-        return x.astype(np.float32, copy=False), mask
-    if sample_rate <= 0:
-        raise ValueError("sample_rate must be > 0")
+        if is_rec:
+            mask = np.ones_like(x, dtype=np.float32)
+            return x, mask
+        return x
 
-    seq_len = x.shape[0]
-    keep = max(1, int(round(seq_len * sample_rate)))
+    original_len = x.shape[0]
+    resample_len = int(original_len * sample_rate)
 
-    if sample_method in ("uniform_nearest", "uniform"):
-        idx = np.linspace(0, seq_len - 1, keep)
-        idx = np.round(idx).astype(np.int64)
-        idx = np.unique(idx)
-    elif sample_method in ("random", "rand"):
-        idx = np.sort(np.random.choice(seq_len, size=keep, replace=False))
+    if sample_method == "uniform_nearest":
+        pick_indices_float = np.linspace(0, original_len - 1, resample_len)
+        pick_indices_int = np.round(pick_indices_float).astype(int)
+    elif sample_method == "equidistant":
+        step = original_len / resample_len
+        pick_indices_int = np.arange(0, original_len, step).astype(int)[:resample_len]
+    elif sample_method == "gaussian":
+        intervals = np.random.normal(loc=1.0, scale=0.5, size=resample_len - 1)
+        intervals = np.abs(intervals)
+        total_duration = original_len - 1
+        intervals = intervals / intervals.sum() * total_duration
+        pick_indices_float = np.hstack(([0], np.cumsum(intervals)))
+        pick_indices_int = np.round(pick_indices_float).astype(int)
+    elif sample_method == "poisson":
+        intervals = np.random.exponential(scale=1.0, size=resample_len - 1)
+        total_duration = original_len - 1
+        intervals = intervals / intervals.sum() * total_duration
+        pick_indices_float = np.hstack(([0], np.cumsum(intervals)))
+        pick_indices_int = np.round(pick_indices_float).astype(int)
     else:
-        idx = np.linspace(0, seq_len - 1, keep)
-        idx = np.round(idx).astype(np.int64)
-        idx = np.unique(idx)
+        raise ValueError(f"Unknown sample method: {sample_method}")
 
-    mask = np.zeros((seq_len,), dtype=np.float32)
-    mask[idx] = 1.0
+    pick_indices_int = np.unique(pick_indices_int)
 
-    if use_mask_0:
-        x_out = np.zeros_like(x, dtype=np.float32)
-        x_out[idx] = x[idx]
+    mask = np.zeros_like(x, dtype=np.float32)
+    mask[pick_indices_int, :] = 1.0
+
+    if use_mask_0 == 1:
+        x_sparse = np.zeros_like(x)
+        x_sparse[pick_indices_int, :] = x[pick_indices_int, :]
+        x = x_sparse
+    elif use_mask_0 == 2:
+        x = x[pick_indices_int, :]
     else:
-        if len(idx) == 1:
-            x_out = np.repeat(x[idx], seq_len, axis=0).astype(np.float32, copy=False)
+        x_downsampled = x[pick_indices_int, :]
+        x_known = pick_indices_int
+        x_new = np.arange(original_len)
+        y_known = x_downsampled
+        if interpolation_method in ["linear", "nearest", "cubic"]:
+            interp_kind = interpolation_method
         else:
-            kind = "linear" if interpolation_method == "linear" else "nearest"
-            t = np.arange(seq_len)
-            interp = interp1d(idx, x[idx], kind=kind, axis=0, bounds_error=False, fill_value="extrapolate")
-            x_out = interp(t).astype(np.float32, copy=False)
+            raise ValueError(f"Unknown interpolation method: {interpolation_method}")
+        f_interp = interp1d(x_known, y_known, kind=interp_kind, axis=0, bounds_error=False, fill_value="extrapolate")
+        x = f_interp(x_new)
 
-    return x_out, mask
+    if is_rec:
+        return x, mask
+    return x
 
 
 def _is_digit_gesture(name: str) -> bool:
@@ -278,8 +302,10 @@ class WidarDigitShardDataset(Dataset):
                 sample_method=self.sample_method,
                 use_mask_0=self.use_mask_0,
                 interpolation_method=self.interpolation_method,
-                is_rec=self.return_rec,
+                is_rec=1,
             )
+        else:
+            mask = np.ones_like(x, dtype=np.float32)
 
         x_t = torch.from_numpy(x.astype(np.float32, copy=False))
         y_t = torch.tensor(label, dtype=torch.long)
