@@ -3,7 +3,7 @@ from transformers import BertConfig
 import argparse
 import tqdm
 import torch
-from dataset import load_all,load_data
+from dataset import Widar_digit_amp_dataset
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import copy
@@ -58,9 +58,14 @@ def main():
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('total parameters:', total_params)
     optim = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=0.01)
-    # dataset=load_all()
-    # train_data,test_data=train_test_split(dataset, test_size=0.1, random_state=42)
-    train_data,test_data=load_data(args.data_path, train_prop=0.9)
+    data = Widar_digit_amp_dataset(
+        root_dir=args.data_path,
+        split="train",
+        sample_rate=0.2,
+        use_mask_0=1,
+        is_rec=1,
+    )
+    train_data,test_data=train_test_split(data, test_size=0.1, random_state=42)
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
     loss_func = nn.CrossEntropyLoss()
@@ -80,23 +85,25 @@ def main():
         loss_list=[]
         acc_list=[]
         pbar = tqdm.tqdm(train_loader, disable=False)
-        for x,_,action,people,timestamp in pbar:
-            x=x.to(device)
-            timestamp=timestamp.to(device)
+        for x_in, mask_in, label_in, _, timestamp in pbar:
+            x = x_in.to(device)
+            timestamp = timestamp.to(device)
             if args.task=="action":
-                label=action.to(device)
+                label = label_in.to(device)
             elif args.task=="people":
-                label=people.to(device)
+                label = label_in.to(device)
             else:
                 print("ERROR")
                 exit(-1)
-            input = copy.deepcopy(x)
+            input = x.clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
             input[input == pad[0]] = -pad[0]
             min_values, _ = torch.min(input, dim=-2, keepdim=True)
             input[input == -pad[0]] = pad[0]
 
-            non_pad = (input != pad[0]).float()
+            non_pad = mask_in.to(device).float()
+            if non_pad.dim() == 3:
+                non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad[0]] = 0
             avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
@@ -114,6 +121,9 @@ def main():
                 rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
             else:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=std.to(device), avg=avg.to(device))).to(device)
+            loss_mask = 1.0 - non_pad
+            loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
+            input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
             input[x==pad[0]]=rand_word[x==pad[0]]
             if args.time_embedding:
                 y = model(input, attn_mask)
@@ -141,23 +151,25 @@ def main():
         loss_list=[]
         acc_list=[]
         pbar = tqdm.tqdm(test_loader, disable=False)
-        for x,_,action,people,timestamp in pbar:
-            x=x.to(device)
-            timestamp=timestamp.to(device)
+        for x_in, mask_in, label_in, _, timestamp in pbar:
+            x = x_in.to(device)
+            timestamp = timestamp.to(device)
             if args.task=="action":
-                label=action.to(device)
+                label = label_in.to(device)
             elif args.task=="people":
-                label=people.to(device)
+                label = label_in.to(device)
             else:
                 print("ERROR")
                 exit(-1)
-            input = copy.deepcopy(x)
+            input = x.clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
             input[input == pad[0]] = -pad[0]
             min_values, _ = torch.min(input, dim=-2, keepdim=True)
             input[input == -pad[0]] = pad[0]
 
-            non_pad = (input != pad[0]).float()
+            non_pad = mask_in.to(device).float()
+            if non_pad.dim() == 3:
+                non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad[0]] = 0
             avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
@@ -175,6 +187,9 @@ def main():
                 rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
             else:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=std.to(device), avg=avg.to(device))).to(device)
+            loss_mask = 1.0 - non_pad
+            loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
+            input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
             input[x==pad[0]]=rand_word[x==pad[0]]
             if args.time_embedding:
                 y = model(input, attn_mask)

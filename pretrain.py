@@ -1,9 +1,9 @@
 from model import CSIBERT,Token_Classifier,Sequence_Classifier
-from transformers import BertConfig,AdamW
+from transformers import BertConfig
 import argparse
 import tqdm
 import torch
-from dataset import load_zero_people,load_all,load_data
+from dataset import Widar_digit_amp_dataset
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 import torch.nn as nn
@@ -11,6 +11,7 @@ import copy
 import numpy as np
 import random
 import math
+from torch.optim import AdamW
 
 pad=np.array([-1000]*52)
 
@@ -28,14 +29,14 @@ def get_args():
     parser.add_argument('--position_embedding_type', type=str, default="absolute")
     parser.add_argument('--time_embedding', action="store_true", default=False) # whether to use time embedding
     parser.add_argument("--cpu", action="store_true",default=False)
-    parser.add_argument("--cuda", type=str, default='0')
+    parser.add_argument("--cuda", type=str, default='2')
     parser.add_argument("--carrier_dim", type=int, default=52)
     parser.add_argument("--carrier_attn", action="store_true",default=False)
     parser.add_argument("--adversarial", action="store_true",default=False) # whether to use adversarial learning
     parser.add_argument('--lr', type=float, default=0.0005)
     # parser.add_argument("--test_people", type=int, nargs='+', default=[0,1])
     parser.add_argument('--epoch', type=int, default=30)
-    parser.add_argument('--data_path', type=str, default="./data/magnitude.npy")
+    parser.add_argument('--data_path', type=str, default="/home/cxy/data/code/datasets/sense-fi/Widar_digit")
     parser.add_argument('--parameter', type=str, default=None)
     args = parser.parse_args()
     return args
@@ -67,7 +68,13 @@ def main():
     print('total parameters:', total_params)
     optim = AdamW(list(model.parameters()) + list(classifier.parameters()), lr=args.lr, weight_decay=0.01)
     # train_data,test_data=load_zero_people(args.test_people)
-    train_data=load_all(magnitude_path=args.data_path)
+    train_data=Widar_digit_amp_dataset(
+        root_dir=args.data_path,
+        split="train",
+        sample_rate=0.2,
+        use_mask_0=1,
+        is_rec=1,
+    )
     train_data,valid_data=train_test_split(train_data, test_size=0.1, random_state=113)
     # train_data,valid_data=load_data(train_prop=0.1)
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
@@ -97,16 +104,18 @@ def main():
         false_mask=[]
 
         pbar = tqdm.tqdm(train_loader, disable=False)
-        for x,_,_,_,timestamp in pbar:
-            x=x.to(device)
-            timestamp=timestamp.to(device)
-            input = copy.deepcopy(x)
+        for x_in, mask_in, _, x_gt, timestamp in pbar:
+            x = x_gt.to(device)
+            timestamp = timestamp.to(device)
+            input = x_in.to(device).clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
             input[input == pad[0]] = -pad[0]
             min_values, _ = torch.min(input, dim=-2, keepdim=True)
             input[input == -pad[0]] = pad[0]
 
-            non_pad = (input != pad[0]).float()
+            non_pad = mask_in.to(device).float()
+            if non_pad.dim() == 3:
+                non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad[0]] = 0
             avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
@@ -119,29 +128,13 @@ def main():
                 input = (input - avg) / (std+1e-8)
 
             batch_size,seq_len,carrier_num=input.shape
-            loss_mask = torch.zeros(batch_size, seq_len)
-
             if args.normal:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
             else:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=std.to(device), avg=avg.to(device))).to(device)
-            for b in range(batch_size):
-                # get index for masking
-                if args.random_mask_percent:
-                    mask_percent = random.uniform(0.15, 0.7)
-                else:
-                    mask_percent=args.mask_percent
-                mask85, cur15 = get_mask_ind(seq_len,mask_percent)
-                # apply mask, random, remain current token
-                for i in mask85:
-                    if x[b][i][0] == pad[0]:
-                        continue
-                    input[b][i] = rand_word[b][i]
-                    loss_mask[b][i] = 1
-                for i in cur15:
-                    if x[b][i][0] == pad[0]:
-                        continue
-                    loss_mask[b][i] = 1
+            loss_mask = 1.0 - non_pad
+            loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
+            input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
 
             input[x==pad[0]]=rand_word[x==pad[0]]
             loss_mask = loss_mask.to(device)
@@ -263,16 +256,18 @@ def main():
         false_mask=[]
 
         pbar = tqdm.tqdm(valid_loader, disable=False)
-        for x,_,_,_,timestamp in pbar:
-            x=x.to(device)
-            timestamp=timestamp.to(device)
-            input = copy.deepcopy(x)
+        for x_in, mask_in, _, x_gt, timestamp in pbar:
+            x = x_gt.to(device)
+            timestamp = timestamp.to(device)
+            input = x_in.to(device).clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
             input[input == pad[0]] = -pad[0]
             min_values, _ = torch.min(input, dim=-2, keepdim=True)
             input[input == -pad[0]] = pad[0]
 
-            non_pad = (input != pad[0]).float()
+            non_pad = mask_in.to(device).float()
+            if non_pad.dim() == 3:
+                non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad[0]] = 0
             avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-5)
@@ -285,29 +280,13 @@ def main():
                 input = (input - avg) / (std+1e-5)
 
             batch_size,seq_len,carrier_num=input.shape
-            loss_mask = torch.zeros(batch_size, seq_len)
-
             if args.normal:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
             else:
                 rand_word = torch.tensor(csibert.mask(batch_size, std=std.to(device), avg=avg.to(device))).to(device)
-            for b in range(batch_size):
-                # get index for masking
-                if args.random_mask_percent:
-                    mask_percent = random.uniform(0.15, 0.8)
-                else:
-                    mask_percent = args.mask_percent
-                mask85, cur15 = get_mask_ind(seq_len, mask_percent)
-                # apply mask, random, remain current token
-                for i in mask85:
-                    if x[b][i][0] == pad[0]:
-                        continue
-                    input[b][i] = rand_word[b][i]
-                    loss_mask[b][i] = 1
-                for i in cur15:
-                    if x[b][i][0] == pad[0]:
-                        continue
-                    loss_mask[b][i] = 1
+            loss_mask = 1.0 - non_pad
+            loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
+            input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
 
             input[x==pad[0]]=rand_word[x==pad[0]]
             loss_mask = loss_mask.to(device)

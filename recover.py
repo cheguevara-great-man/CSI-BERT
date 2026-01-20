@@ -3,7 +3,7 @@ from transformers import BertConfig
 import argparse
 import tqdm
 import torch
-from dataset import load_all
+from dataset import Widar_digit_amp_dataset
 from torch.utils.data import DataLoader
 import copy
 import numpy as np
@@ -40,38 +40,50 @@ def main():
     model=Token_Classifier(csibert,csi_dim)
     model.load_state_dict(torch.load(args.path))
     model = model.to(device)
-    data = load_all(magnitude_path=args.data_path)
+    data = Widar_digit_amp_dataset(
+        root_dir=args.data_path,
+        split="test",
+        sample_rate=0.2,
+        use_mask_0=1,
+        is_rec=1,
+    )
     data_loader = DataLoader(data, batch_size=args.batch_size, shuffle=False)
     model.eval()
     torch.set_grad_enabled(False)
     pbar = tqdm.tqdm(data_loader, disable=False)
     output1 = None
     output2 = None
-    for x, _, _, _, timestamp in pbar:
-        x = x.to(device)
+    mse_list = []
+    for x_in, mask_in, _, x_gt, timestamp in pbar:
+        x = x_gt.to(device)
         timestamp = timestamp.to(device)
         attn_mask = (x[:, :, 0] != pad[0]).float().to(device)
-        input = copy.deepcopy(x)
+        input = x_in.to(device).clone()
         batch_size, seq_len, carrier_num = input.shape
         max_values, _ = torch.max(input, dim=-2, keepdim=True)
         input[input == pad[0]] = -pad[0]
         min_values, _ = torch.min(input, dim=-2, keepdim=True)
         input[input == -pad[0]] = pad[0]
+        non_pad = mask_in.to(device).float()
+        if non_pad.dim() == 3:
+            non_pad = non_pad[:, :, 0]
+        avg = copy.deepcopy(input)
+        avg[input == pad[0]] = 0
+        avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True) + 1e-8)
+        std = (input - avg) ** 2
+        std[input == pad[0]] = 0
+        std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True) + 1e-8)
+        std = torch.sqrt(std)
         if args.normal:
-            non_pad = (input != pad[0]).float()
-            avg = copy.deepcopy(input)
-            avg[input == pad[0]] = 0
-            avg = torch.sum(avg, dim=-2, keepdim=True) / torch.sum(non_pad, dim=-2, keepdim=True)
-            std = (input - avg) ** 2
-            std[input == pad[0]] = 0
-            std = torch.sum(std, dim=-2, keepdim=True) / torch.sum(non_pad, dim=-2, keepdim=True)
-            std = torch.sqrt(std)
-            input = (input - avg) / std
+            input = (input - avg) / (std + 1e-8)
 
         if args.normal:
             rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
         else:
-            rand_word = torch.tensor(csibert.mask(batch_size, min=min_values, max=max_values)).to(device)
+            rand_word = torch.tensor(csibert.mask(batch_size, std=std.to(device), avg=avg.to(device))).to(device)
+        loss_mask = 1.0 - non_pad
+        loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
+        input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
         input[x==pad[0]]=rand_word[x==pad[0]]
         if args.time_embedding:
             y = model(input, None)
@@ -80,20 +92,23 @@ def main():
         if args.normal:
             y = y * std + avg
 
-        attn_mask=attn_mask.unsqueeze(2)
-        y2 = x*attn_mask+y*(1-attn_mask)
+        non_pad_full = non_pad.unsqueeze(2).repeat(1, 1, carrier_num)
+        output = input * non_pad_full + y * (1 - non_pad_full)
+        mse_list.append(torch.mean((output - x) ** 2).item())
 
         if output1 is None:
             output1=y
-            output2=y2
+            output2=output
         else:
             output1=torch.cat([output1,y],dim=0)
-            output2=torch.cat([output2,y2],dim=0)
+            output2=torch.cat([output2,output],dim=0)
 
     replace=output1.cpu().numpy()
     recover=output2.cpu().numpy()
     np.save("replace.npy",replace)
     np.save("recover.npy", recover)
+    if len(mse_list) > 0:
+        print("Recover MSE:", float(np.mean(mse_list)))
 
 if __name__ == '__main__':
     main()
