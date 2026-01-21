@@ -133,6 +133,7 @@ def get_args():
     parser.add_argument('--sample_method', type=str, default="equidistant")
     parser.add_argument('--interpolation_method', type=str, default="linear")
     parser.add_argument('--use_mask_0', type=int, default=1)
+    parser.add_argument('--use_x_gt', action="store_true", default=False)
     args = parser.parse_args()
     return args
 
@@ -191,10 +192,26 @@ def main():
         loss_list=[]
         acc_list=[]
         pbar = tqdm.tqdm(train_loader, disable=False)
-        for x_in, mask_in, label_in, _, timestamp in pbar:
+        for x_in, mask_in, label_in, x_gt, timestamp in pbar:
+            label = label_in.to(device)
+            if args.use_x_gt:
+                x = x_gt.to(device)
+                y = model.classifier(x)
+                loss = loss_func(y, label)
+                output = torch.argmax(y, dim=-1)
+                acc = torch.sum(output == label) / label.shape[0]
+
+                model.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 3.0)
+                optim.step()
+
+                loss_list.append(loss.item())
+                acc_list.append(acc.item())
+                continue
+
             x = x_in.to(device)
             timestamp = timestamp.to(device)
-            label = label_in.to(device)
             input = x.clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
             input[input == pad] = -pad
@@ -249,10 +266,21 @@ def main():
         loss_list=[]
         acc_list=[]
         pbar = tqdm.tqdm(test_loader, disable=False)
-        for x_in, mask_in, label_in, _, timestamp in pbar:
+        for x_in, mask_in, label_in, x_gt, timestamp in pbar:
+            label = label_in.to(device)
+            if args.use_x_gt:
+                x = x_gt.to(device)
+                y = model.classifier(x)
+                loss = loss_func(y, label)
+                output = torch.argmax(y, dim=-1)
+                acc = torch.sum(output == label) / label.shape[0]
+
+                loss_list.append(loss.item())
+                acc_list.append(acc.item())
+                continue
+
             x = x_in.to(device)
             timestamp = timestamp.to(device)
-            label = label_in.to(device)
             input = x.clone()
             max_values, _ = torch.max(input, dim=-2, keepdim=True)
             input[input == pad] = -pad
