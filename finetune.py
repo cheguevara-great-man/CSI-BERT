@@ -142,18 +142,48 @@ def _check_label_alignment(name, dataset, max_samples=200):
         off = int(row["offset"])
         label = int(row["label"])
         if 0 <= off < y.shape[0]:
-            if int(y[off]) != label:
+            if int(np.asarray(y[off]).reshape(-1)[0]) != label:
                 mismatch0 += 1
         else:
             out0 += 1
         off1 = off - 1
         if 0 <= off1 < y.shape[0]:
-            if int(y[off1]) != label:
+            if int(np.asarray(y[off1]).reshape(-1)[0]) != label:
                 mismatch1 += 1
         else:
             out1 += 1
     print(f"{name} label align (offset): mismatch {mismatch0}/{total}, out_of_range {out0}")
     print(f"{name} label align (offset-1): mismatch {mismatch1}/{total}, out_of_range {out1}")
+
+def _print_label_order_stats(name, dataset, batch_size, max_batches=5, head=50):
+    if not hasattr(dataset, "items"):
+        print(f"{name} label order: unavailable")
+        return
+    labels = [int(item.get("label", -1)) for item in dataset.items]
+    if not labels:
+        print(f"{name} label order: empty")
+        return
+    runs = []
+    cur = labels[0]
+    run_len = 1
+    for v in labels[1:]:
+        if v == cur:
+            run_len += 1
+        else:
+            runs.append(run_len)
+            cur = v
+            run_len = 1
+    runs.append(run_len)
+    max_run = max(runs)
+    avg_run = float(sum(runs)) / max(1, len(runs))
+    print(f"{name} label order: max run {max_run}, avg run {avg_run:.2f}")
+    show = labels[:head]
+    print(f"{name} label head({len(show)}): {show}")
+    total_batches = min(max_batches, (len(labels) + batch_size - 1) // batch_size)
+    for i in range(total_batches):
+        chunk = labels[i * batch_size:(i + 1) * batch_size]
+        uniq = len(set(chunk))
+        print(f"{name} batch {i} unique labels: {uniq}")
 
 def get_args():
     parser = argparse.ArgumentParser(description='')
@@ -190,6 +220,9 @@ def get_args():
     parser.add_argument('--offset_shift', type=int, default=0)
     parser.add_argument('--check_label_align', action="store_true", default=False)
     parser.add_argument('--label_check_samples', type=int, default=200)
+    parser.add_argument('--check_label_order', action="store_true", default=False)
+    parser.add_argument('--label_order_batches', type=int, default=5)
+    parser.add_argument('--label_order_head', type=int, default=50)
     args = parser.parse_args()
     return args
 
@@ -243,6 +276,9 @@ def main():
     if args.check_label_align:
         _check_label_alignment("train", train_data, args.label_check_samples)
         _check_label_alignment("test", test_data, args.label_check_samples)
+    if args.check_label_order:
+        _print_label_order_stats("train", train_data, args.batch_size, args.label_order_batches, args.label_order_head)
+        _print_label_order_stats("test", test_data, args.batch_size, args.label_order_batches, args.label_order_head)
     if args.print_x_gt:
         x_in, mask_in, label_in, x_gt, timestamp = train_data[0]
         print("x_gt shape:", tuple(x_gt.shape))
