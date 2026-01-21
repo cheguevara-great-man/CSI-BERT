@@ -249,7 +249,7 @@ def main():
             loss_mask=loss_mask.repeat(1,1,csi_dim)
             loss_mask[x==0]=0
             x[x==0]=1
-            error = torch.sum(torch.abs(y - x) / x * loss_mask) / torch.sum(loss_mask)
+            error = torch.sum(torch.abs((y - x) / (x + 1e-8)) * loss_mask) / torch.sum(loss_mask)
             mse_list.append(current_mse.item())
             err_list.append(error.item())
         log = "Epoch {} | Train Loss {:06f}, Train MAPE {:06f}, Train MSE {:06f}, ".format(j, np.mean(loss_list),np.mean(err_list),np.mean(mse_list))
@@ -385,7 +385,7 @@ def main():
             loss_mask=loss_mask.repeat(1,1,csi_dim)
             loss_mask[x==0]=0
             x[x==0]=1
-            error = torch.sum(torch.abs(y - x) / x * loss_mask) / torch.sum(loss_mask)
+            error = torch.sum(torch.abs((y - x) / (x + 1e-8)) * loss_mask) / torch.sum(loss_mask)
             mse_list.append(current_mse.item())
             err_list.append(error.item())
         log = "Test Loss {:06f}, Test MAPE {:06f}, Test MSE {:06f} ".format(np.mean(loss_list), np.mean(err_list), np.mean(mse_list))
