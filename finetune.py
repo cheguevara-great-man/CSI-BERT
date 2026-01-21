@@ -120,6 +120,41 @@ def _print_label_stats(name, dataset, class_num):
     if labels.min() < 0 or labels.max() >= class_num:
         print(f"{name} label out of range for class_num={class_num}")
 
+def _check_label_alignment(name, dataset, max_samples=200):
+    if not hasattr(dataset, "items") or not hasattr(dataset, "_load_shard"):
+        print(f"{name} label align: unavailable")
+        return
+    total = min(max_samples, len(dataset.items))
+    if total == 0:
+        print(f"{name} label align: empty")
+        return
+    mismatch0 = 0
+    mismatch1 = 0
+    out0 = 0
+    out1 = 0
+    for i in range(total):
+        row = dataset.items[i]
+        shard = dataset._load_shard(row["shard_id"])
+        y = shard.get("y", None)
+        if y is None:
+            print(f"{name} label align: shard has no 'y'")
+            return
+        off = int(row["offset"])
+        label = int(row["label"])
+        if 0 <= off < y.shape[0]:
+            if int(y[off]) != label:
+                mismatch0 += 1
+        else:
+            out0 += 1
+        off1 = off - 1
+        if 0 <= off1 < y.shape[0]:
+            if int(y[off1]) != label:
+                mismatch1 += 1
+        else:
+            out1 += 1
+    print(f"{name} label align (offset): mismatch {mismatch0}/{total}, out_of_range {out0}")
+    print(f"{name} label align (offset-1): mismatch {mismatch1}/{total}, out_of_range {out1}")
+
 def get_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--batch_size', type=int, default=64)
@@ -151,6 +186,10 @@ def get_args():
     parser.add_argument('--use_mask_0', type=int, default=1)
     parser.add_argument('--use_x_gt', action="store_true", default=False)
     parser.add_argument('--print_x_gt', action="store_true", default=False)
+    parser.add_argument('--label_from_shard', action="store_true", default=False)
+    parser.add_argument('--offset_shift', type=int, default=0)
+    parser.add_argument('--check_label_align', action="store_true", default=False)
+    parser.add_argument('--label_check_samples', type=int, default=200)
     args = parser.parse_args()
     return args
 
@@ -176,6 +215,7 @@ def main():
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('total parameters:', total_params)
     optim = torch.optim.Adam(model.classifier.parameters(), lr=args.lr, weight_decay=0.01)
+    label_source = "shard" if args.label_from_shard else "index"
     train_data = Widar_digit_amp_dataset(
         root_dir=args.data_path,
         split="train",
@@ -184,6 +224,8 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
+        label_source=label_source,
+        offset_shift=args.offset_shift,
     )
     test_data = Widar_digit_amp_dataset(
         root_dir=args.data_path,
@@ -193,9 +235,14 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
+        label_source=label_source,
+        offset_shift=args.offset_shift,
     )
     _print_label_stats("train", train_data, args.class_num)
     _print_label_stats("test", test_data, args.class_num)
+    if args.check_label_align:
+        _check_label_alignment("train", train_data, args.label_check_samples)
+        _check_label_alignment("test", test_data, args.label_check_samples)
     if args.print_x_gt:
         x_in, mask_in, label_in, x_gt, timestamp = train_data[0]
         print("x_gt shape:", tuple(x_gt.shape))

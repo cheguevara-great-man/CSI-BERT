@@ -176,6 +176,8 @@ class WidarDigitShardDataset(Dataset):
         sample_method: str = "uniform_nearest",
         interpolation_method: str = "linear",
         use_mask_0: int = 0,
+        label_source: str = "index",
+        offset_shift: int = 0,
         **kwargs,
     ):
         super().__init__()
@@ -190,6 +192,8 @@ class WidarDigitShardDataset(Dataset):
         self.sample_method = sample_method
         self.interpolation_method = interpolation_method
         self.use_mask_0 = int(use_mask_0)
+        self.label_source = label_source
+        self.offset_shift = int(offset_shift)
 
         if variant not in ("amp", "conj"):
             raise ValueError("variant must be 'amp' or 'conj'")
@@ -285,10 +289,22 @@ class WidarDigitShardDataset(Dataset):
     def __getitem__(self, idx):
         row = self.items[idx]
         shard_id = row["shard_id"]
-        off = row["offset"]
-        label = int(row["label"])
-
         shard = self._load_shard(shard_id)
+        off = int(row["offset"]) + self.offset_shift
+        if off < 0 or off >= shard[self.x_key].shape[0]:
+            off = int(row["offset"])
+        if off < 0 or off >= shard[self.x_key].shape[0]:
+            raise IndexError(f"offset out of range: {off} for shard {shard_id}")
+
+        if self.label_source == "shard":
+            if "y" not in shard:
+                raise KeyError("label_source='shard' but shard has no 'y' key")
+            label = int(shard["y"][off])
+        elif self.label_source == "index":
+            label = int(row["label"])
+        else:
+            raise ValueError("label_source must be 'index' or 'shard'")
+
         x = shard[self.x_key][off]
         if x.ndim == 3:
             x = x[0]
