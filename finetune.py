@@ -150,6 +150,7 @@ def get_args():
     parser.add_argument('--interpolation_method', type=str, default="linear")
     parser.add_argument('--use_mask_0', type=int, default=1)
     parser.add_argument('--use_x_gt', action="store_true", default=False)
+    parser.add_argument('--print_x_gt', action="store_true", default=False)
     args = parser.parse_args()
     return args
 
@@ -195,6 +196,14 @@ def main():
     )
     _print_label_stats("train", train_data, args.class_num)
     _print_label_stats("test", test_data, args.class_num)
+    if args.print_x_gt:
+        x_in, mask_in, label_in, x_gt, timestamp = train_data[0]
+        print("x_gt shape:", tuple(x_gt.shape))
+        print("x_gt stats: min {:.6f} max {:.6f} mean {:.6f}".format(
+            float(x_gt.min()), float(x_gt.max()), float(x_gt.mean())
+        ))
+        print("x_gt[0, :10]:", x_gt[0, :10].tolist())
+        print("label:", int(label_in))
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
     loss_func = nn.CrossEntropyLoss()
