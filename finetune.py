@@ -105,86 +105,6 @@ class Recon_Classifier_Pipeline(nn.Module):
         return logits
 
 
-def _print_label_stats(name, dataset, class_num):
-    if not hasattr(dataset, "items"):
-        print(f"{name} label stats: unavailable")
-        return
-    labels = np.array([item.get("label", -1) for item in dataset.items], dtype=np.int64)
-    if labels.size == 0:
-        print(f"{name} label stats: empty")
-        return
-    unique, counts = np.unique(labels, return_counts=True)
-    pairs = ", ".join([f"{int(k)}:{int(v)}" for k, v in zip(unique, counts)])
-    print(f"{name} label min/max: {int(labels.min())}/{int(labels.max())}")
-    print(f"{name} label counts: {pairs}")
-    if labels.min() < 0 or labels.max() >= class_num:
-        print(f"{name} label out of range for class_num={class_num}")
-
-def _check_label_alignment(name, dataset, max_samples=200):
-    if not hasattr(dataset, "items") or not hasattr(dataset, "_load_shard"):
-        print(f"{name} label align: unavailable")
-        return
-    total = min(max_samples, len(dataset.items))
-    if total == 0:
-        print(f"{name} label align: empty")
-        return
-    mismatch0 = 0
-    mismatch1 = 0
-    out0 = 0
-    out1 = 0
-    for i in range(total):
-        row = dataset.items[i]
-        shard = dataset._load_shard(row["shard_id"])
-        y = shard.get("y", None)
-        if y is None:
-            print(f"{name} label align: shard has no 'y'")
-            return
-        off = int(row["offset"])
-        label = int(row["label"])
-        if 0 <= off < y.shape[0]:
-            if int(np.asarray(y[off]).reshape(-1)[0]) != label:
-                mismatch0 += 1
-        else:
-            out0 += 1
-        off1 = off - 1
-        if 0 <= off1 < y.shape[0]:
-            if int(np.asarray(y[off1]).reshape(-1)[0]) != label:
-                mismatch1 += 1
-        else:
-            out1 += 1
-    print(f"{name} label align (offset): mismatch {mismatch0}/{total}, out_of_range {out0}")
-    print(f"{name} label align (offset-1): mismatch {mismatch1}/{total}, out_of_range {out1}")
-
-def _print_label_order_stats(name, dataset, batch_size, max_batches=5, head=50):
-    if not hasattr(dataset, "items"):
-        print(f"{name} label order: unavailable")
-        return
-    labels = [int(item.get("label", -1)) for item in dataset.items]
-    if not labels:
-        print(f"{name} label order: empty")
-        return
-    runs = []
-    cur = labels[0]
-    run_len = 1
-    for v in labels[1:]:
-        if v == cur:
-            run_len += 1
-        else:
-            runs.append(run_len)
-            cur = v
-            run_len = 1
-    runs.append(run_len)
-    max_run = max(runs)
-    avg_run = float(sum(runs)) / max(1, len(runs))
-    print(f"{name} label order: max run {max_run}, avg run {avg_run:.2f}")
-    show = labels[:head]
-    print(f"{name} label head({len(show)}): {show}")
-    total_batches = min(max_batches, (len(labels) + batch_size - 1) // batch_size)
-    for i in range(total_batches):
-        chunk = labels[i * batch_size:(i + 1) * batch_size]
-        uniq = len(set(chunk))
-        print(f"{name} batch {i} unique labels: {uniq}")
-
 def get_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--batch_size', type=int, default=64)
@@ -216,14 +136,6 @@ def get_args():
     parser.add_argument('--interpolation_method', type=str, default="linear")
     parser.add_argument('--use_mask_0', type=int, default=1)
     parser.add_argument('--use_x_gt', action="store_true", default=False)
-    parser.add_argument('--print_x_gt', action="store_true", default=False)
-    parser.add_argument('--label_from_shard', action="store_true", default=False)
-    parser.add_argument('--offset_shift', type=int, default=0)
-    parser.add_argument('--check_label_align', action="store_true", default=False)
-    parser.add_argument('--label_check_samples', type=int, default=200)
-    parser.add_argument('--check_label_order', action="store_true", default=False)
-    parser.add_argument('--label_order_batches', type=int, default=5)
-    parser.add_argument('--label_order_head', type=int, default=50)
     args = parser.parse_args()
     return args
 
@@ -249,7 +161,6 @@ def main():
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('total parameters:', total_params)
     optim = torch.optim.Adam(model.classifier.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    label_source = "shard" if args.label_from_shard else "index"
     train_data = Widar_digit_amp_dataset(
         root_dir=args.data_path,
         split="train",
@@ -258,8 +169,6 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
-        label_source=label_source,
-        offset_shift=args.offset_shift,
     )
     test_data = Widar_digit_amp_dataset(
         root_dir=args.data_path,
@@ -269,25 +178,7 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
-        label_source=label_source,
-        offset_shift=args.offset_shift,
     )
-    _print_label_stats("train", train_data, args.class_num)
-    _print_label_stats("test", test_data, args.class_num)
-    if args.check_label_align:
-        _check_label_alignment("train", train_data, args.label_check_samples)
-        _check_label_alignment("test", test_data, args.label_check_samples)
-    if args.check_label_order:
-        _print_label_order_stats("train", train_data, args.batch_size, args.label_order_batches, args.label_order_head)
-        _print_label_order_stats("test", test_data, args.batch_size, args.label_order_batches, args.label_order_head)
-    if args.print_x_gt:
-        x_in, mask_in, label_in, x_gt, timestamp = train_data[0]
-        print("x_gt shape:", tuple(x_gt.shape))
-        print("x_gt stats: min {:.6f} max {:.6f} mean {:.6f}".format(
-            float(x_gt.min()), float(x_gt.max()), float(x_gt.mean())
-        ))
-        print("x_gt[0, :10]:", x_gt[0, :10].tolist())
-        print("label:", int(label_in))
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
     loss_func = nn.CrossEntropyLoss()
