@@ -176,7 +176,7 @@ def main():
         use_mask_0=args.use_mask_0,
         is_rec=1,
     )
-    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
     loss_func = nn.CrossEntropyLoss()
     best_acc=0
@@ -207,10 +207,10 @@ def main():
                 non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad] = 0
-            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
+            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
             std = (input - avg) ** 2
             std[input == pad] = 0
-            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
+            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
             std = torch.sqrt(std)
 
             if args.normal:
@@ -265,10 +265,10 @@ def main():
                 non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad] = 0
-            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
+            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
             std = (input - avg) ** 2
             std[input == pad] = 0
-            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
+            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
             std = torch.sqrt(std)
 
             if args.normal:

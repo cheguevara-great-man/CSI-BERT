@@ -90,7 +90,7 @@ def main():
         is_rec=1,
     )
     # train_data,valid_data=load_data(train_prop=0.1)
-    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
     valid_loader = DataLoader(valid_data, batch_size=args.batch_size, shuffle=False)
     loss_smooth = nn.MSELoss(reduction='none')
     loss_func = nn.MSELoss(reduction='none')
@@ -131,10 +131,10 @@ def main():
                 non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad[0]] = 0
-            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
+            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
             std = (input - avg) ** 2
             std[input == pad[0]] = 0
-            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-8)
+            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
             std = torch.sqrt(std)
 
             if args.normal:
@@ -283,10 +283,10 @@ def main():
                 non_pad = non_pad[:, :, 0]
             avg = copy.deepcopy(input)
             avg[input == pad[0]] = 0
-            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-5)
+            avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-5)
             std = (input - avg) ** 2
             std[input == pad[0]] = 0
-            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad, dim=-2, keepdim=True)+1e-5)
+            std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-5)
             std = torch.sqrt(std)
 
             if args.normal:
