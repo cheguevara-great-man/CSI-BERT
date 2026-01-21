@@ -203,6 +203,7 @@ def get_args():
     parser.add_argument("--carrier_attn", action="store_true",default=False)
     parser.add_argument("--freeze", action="store_true",default=False)
     parser.add_argument('--lr', type=float, default=0.0005)
+    parser.add_argument('--weight_decay', type=float, default=0.0)
     # parser.add_argument("--test_people", type=int, nargs='+', default=[0,1])
     parser.add_argument('--epoch', type=int, default=30)
     parser.add_argument('--class_num', type=int, default=6) #action:6, people:8
@@ -247,7 +248,7 @@ def main():
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('total parameters:', total_params)
-    optim = torch.optim.Adam(model.classifier.parameters(), lr=args.lr, weight_decay=0.01)
+    optim = torch.optim.Adam(model.classifier.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     label_source = "shard" if args.label_from_shard else "index"
     train_data = Widar_digit_amp_dataset(
         root_dir=args.data_path,
