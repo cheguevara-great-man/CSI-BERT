@@ -104,6 +104,22 @@ class Recon_Classifier_Pipeline(nn.Module):
         logits = self.classifier(x_rec)
         return logits
 
+
+def _print_label_stats(name, dataset, class_num):
+    if not hasattr(dataset, "items"):
+        print(f"{name} label stats: unavailable")
+        return
+    labels = np.array([item.get("label", -1) for item in dataset.items], dtype=np.int64)
+    if labels.size == 0:
+        print(f"{name} label stats: empty")
+        return
+    unique, counts = np.unique(labels, return_counts=True)
+    pairs = ", ".join([f"{int(k)}:{int(v)}" for k, v in zip(unique, counts)])
+    print(f"{name} label min/max: {int(labels.min())}/{int(labels.max())}")
+    print(f"{name} label counts: {pairs}")
+    if labels.min() < 0 or labels.max() >= class_num:
+        print(f"{name} label out of range for class_num={class_num}")
+
 def get_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--batch_size', type=int, default=64)
@@ -177,6 +193,8 @@ def main():
         use_mask_0=args.use_mask_0,
         is_rec=1,
     )
+    _print_label_stats("train", train_data, args.class_num)
+    _print_label_stats("test", test_data, args.class_num)
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
     loss_func = nn.CrossEntropyLoss()
