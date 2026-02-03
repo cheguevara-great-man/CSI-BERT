@@ -90,8 +90,8 @@ def main():
         is_rec=1,
     )
     # train_data,valid_data=load_data(train_prop=0.1)
-    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
-    valid_loader = DataLoader(valid_data, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False,num_workers=4)
+    valid_loader = DataLoader(valid_data, batch_size=args.batch_size, shuffle=False,num_workers=2)
     loss_smooth = nn.MSELoss(reduction='none')
     loss_func = nn.MSELoss(reduction='none')
     loss_func_cls = nn.CrossEntropyLoss()
