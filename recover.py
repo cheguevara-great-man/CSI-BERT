@@ -31,6 +31,8 @@ def get_args():
     parser.add_argument('--sample_method', type=str, default="equidistant")
     parser.add_argument('--interpolation_method', type=str, default="linear")
     parser.add_argument('--use_mask_0', type=int, default=1)
+    parser.add_argument('--traffic_train_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/train.pt')
+    parser.add_argument('--traffic_test_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/test.pt')
     args = parser.parse_args()
     return args
 
@@ -52,6 +54,8 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
+        traffic_train_pt=args.traffic_train_pt,
+        traffic_test_pt=args.traffic_test_pt,
     )
     data_loader = DataLoader(data, batch_size=args.batch_size, shuffle=False)
     model.eval()

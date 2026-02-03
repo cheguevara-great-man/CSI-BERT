@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 import copy
 import numpy as np
+import csv
 
 pad = -1000
 
@@ -135,6 +136,8 @@ def get_args():
     parser.add_argument('--sample_method', type=str, default="equidistant")
     parser.add_argument('--interpolation_method', type=str, default="linear")
     parser.add_argument('--use_mask_0', type=int, default=1)
+    parser.add_argument('--traffic_train_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/train.pt')
+    parser.add_argument('--traffic_test_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/test.pt')
     parser.add_argument('--use_x_gt', action="store_true", default=False)
     args = parser.parse_args()
     return args
@@ -169,6 +172,8 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
+        traffic_train_pt=args.traffic_train_pt,
+        traffic_test_pt=args.traffic_test_pt,
     )
     test_data = Widar_digit_amp_dataset(
         root_dir=args.data_path,
@@ -178,7 +183,13 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
+        traffic_train_pt=args.traffic_train_pt,
+        traffic_test_pt=args.traffic_test_pt,
     )
+    if hasattr(test_data, "set_rate_filter"):
+        test_data.set_rate_filter(None)
+    if hasattr(test_data, "set_eval_subset"):
+        test_data.set_eval_subset(len(test_data), seed=0)
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
     loss_func = nn.CrossEntropyLoss()
@@ -188,6 +199,8 @@ def main():
     j=0
     while True:
         j+=1
+        if hasattr(train_data, "set_epoch"):
+            train_data.set_epoch(j)
         model.train()
         model.reconstructor.eval()
         torch.set_grad_enabled(True)
@@ -335,6 +348,83 @@ def main():
             best_epoch+=1
         if best_epoch>=args.epoch:
             break
+
+    if hasattr(test_loader.dataset, "get_available_rates"):
+        rates = test_loader.dataset.get_available_rates()
+        if rates:
+            rate_history = []
+            print("Running per-rate evaluation...")
+            for r in rates:
+                if hasattr(test_loader.dataset, "set_rate_filter"):
+                    test_loader.dataset.set_rate_filter(r)
+                if hasattr(test_loader.dataset, "set_eval_subset"):
+                    test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=1000 + int(r))
+                loss_list = []
+                acc_list = []
+                pbar = tqdm.tqdm(test_loader, disable=False)
+                for x_in, mask_in, label_in, x_gt, timestamp in pbar:
+                    label = label_in.to(device)
+                    if args.use_x_gt:
+                        x = x_gt.to(device)
+                        y = model.classifier(x)
+                        loss = loss_func(y, label)
+                        output = torch.argmax(y, dim=-1)
+                        acc = torch.sum(output == label) / label.shape[0]
+                        loss_list.append(loss.item())
+                        acc_list.append(acc.item())
+                        continue
+
+                    x = x_in.to(device)
+                    timestamp = timestamp.to(device)
+                    input = x.clone()
+                    max_values, _ = torch.max(input, dim=-2, keepdim=True)
+                    input[input == pad] = -pad
+                    min_values, _ = torch.min(input, dim=-2, keepdim=True)
+                    input[input == -pad] = pad
+
+                    mask_keep = mask_in.to(device).float()
+                    non_pad = mask_keep
+                    if non_pad.dim() == 3:
+                        non_pad = non_pad[:, :, 0]
+                    avg = copy.deepcopy(input)
+                    avg[input == pad] = 0
+                    avg = torch.sum(avg, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
+                    std = (input - avg) ** 2
+                    std[input == pad] = 0
+                    std = torch.sum(std, dim=-2, keepdim=True) / (torch.sum(non_pad.unsqueeze(-1), dim=-2, keepdim=True)+1e-8)
+                    std = torch.sqrt(std)
+
+                    if args.normal:
+                        input = (input - avg) / (std+1e-5)
+
+                    batch_size,seq_len,carrier_num=input.shape
+                    attn_mask = torch.ones_like(non_pad)
+                    if args.normal:
+                        rand_word = torch.tensor(csibert.mask(batch_size, std=torch.tensor([1]).to(device), avg=torch.tensor([0]).to(device))).to(device)
+                    else:
+                        rand_word = torch.tensor(csibert.mask(batch_size, std=std.to(device), avg=avg.to(device))).to(device)
+                    loss_mask = 1.0 - non_pad
+                    loss_mask_full = loss_mask.unsqueeze(2).repeat(1, 1, carrier_num)
+                    input[loss_mask_full == 1] = rand_word[loss_mask_full == 1]
+                    input[x==pad]=rand_word[x==pad]
+                    y = model(input, attn_mask, mask_keep, timestamp)
+
+                    loss = loss_func(y,label)
+                    output = torch.argmax(y, dim=-1)
+                    acc=torch.sum(output==label)/batch_size
+
+                    loss_list.append(loss.item())
+                    acc_list.append(acc.item())
+                rate_history.append({'rate_hz': int(r), 'loss': float(np.mean(loss_list)), 'accuracy': float(np.mean(acc_list))})
+                print(f"[rate {r}] Loss: {np.mean(loss_list):.6f}, Acc: {np.mean(acc_list):.6f}")
+            if hasattr(test_loader.dataset, "set_rate_filter"):
+                test_loader.dataset.set_rate_filter(None)
+            if hasattr(test_loader.dataset, "set_eval_subset"):
+                test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
+            with open(args.task + "_by_rate.csv", "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["rate_hz", "loss", "accuracy"])
+                writer.writeheader()
+                writer.writerows(rate_history)
 
     print("Acc Max:",np.max(ACC))
     print("Acc Mean:",np.max(ACC[-30:]))

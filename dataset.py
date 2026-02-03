@@ -176,6 +176,8 @@ class WidarDigitShardDataset(Dataset):
         sample_method: str = "uniform_nearest",
         interpolation_method: str = "linear",
         use_mask_0: int = 0,
+        traffic_train_pt: str = None,
+        traffic_test_pt: str = None,
         **kwargs,
     ):
         super().__init__()
@@ -243,10 +245,99 @@ class WidarDigitShardDataset(Dataset):
             )
 
         self.items = rows
+        # trafficlike offline masks
+        self._traffic_active = (self.sample_method == "trafficlike")
+        self._traffic_masks = None
+        self._traffic_rate = None
+        self._traffic_perm = None
+        self._traffic_subset = None
+        self._traffic_rate_idx = None
+        self._traffic_epoch = 0
+        if self._traffic_active:
+            pt_path = traffic_train_pt if split == "train" else traffic_test_pt
+            if not pt_path:
+                raise ValueError("trafficlike requires traffic_train_pt/test_pt")
+            payload = torch.load(pt_path, map_location="cpu")
+            masks = payload.get("masks", None)
+            if masks is None:
+                raise KeyError(f"'masks' not found in {pt_path}")
+            if torch.is_tensor(masks):
+                masks = masks.cpu().numpy()
+            masks = np.asarray(masks)
+            if masks.ndim != 2:
+                raise ValueError(f"traffic masks must be 2D (N,T), got {masks.shape}")
+            self._traffic_masks = masks.astype(np.uint8, copy=False)
+            rate = payload.get("rate_hz", None)
+            if rate is not None:
+                if torch.is_tensor(rate):
+                    rate = rate.cpu().numpy()
+                rate = np.asarray(rate)
+                if rate.ndim == 1 and rate.shape[0] == self._traffic_masks.shape[0]:
+                    self._traffic_rate = rate.astype(np.int16, copy=False)
         self._cache = OrderedDict()
 
     def __len__(self):
         return len(self.items)
+
+    def set_epoch(self, epoch: int):
+        if not self._traffic_active:
+            return
+        self._traffic_epoch = int(epoch)
+        rng = np.random.RandomState(self._traffic_epoch)
+        self._traffic_perm = rng.permutation(self._traffic_masks.shape[0])
+        self._traffic_subset = None
+
+    def set_eval_subset(self, n: int, seed: int = None):
+        if not self._traffic_active:
+            return
+        n = int(n)
+        if n <= 0:
+            self._traffic_subset = None
+            return
+        pool = self._traffic_rate_idx
+        if pool is None:
+            pool = np.arange(self._traffic_masks.shape[0], dtype=np.int64)
+        if pool.size == 0:
+            self._traffic_subset = None
+            return
+        rng = np.random.RandomState(int(seed) if seed is not None else self._traffic_epoch)
+        replace = n > pool.size
+        self._traffic_subset = rng.choice(pool, size=n, replace=replace)
+
+    def set_rate_filter(self, rate_hz):
+        if not self._traffic_active:
+            return
+        if rate_hz is None:
+            self._traffic_rate_idx = None
+            self._traffic_subset = None
+            return
+        if self._traffic_rate is None:
+            raise RuntimeError("trafficlike rate_hz not available in masks file")
+        rate = int(rate_hz)
+        idx = np.nonzero(self._traffic_rate == rate)[0]
+        self._traffic_rate_idx = idx
+        self._traffic_subset = None
+
+    def get_available_rates(self):
+        if (not self._traffic_active) or (self._traffic_rate is None):
+            return []
+        rates = np.unique(self._traffic_rate)
+        return [int(r) for r in rates.tolist()]
+
+    def _pick_traffic_mask_index(self, idx: int) -> int:
+        if self._traffic_masks is None:
+            raise RuntimeError("trafficlike masks not loaded")
+        if self._traffic_subset is not None:
+            subset = self._traffic_subset
+            return int(subset[idx % subset.shape[0]])
+        if self._traffic_rate_idx is not None:
+            pool = self._traffic_rate_idx
+            if pool.size > 0:
+                return int(pool[idx % pool.shape[0]])
+        if self._traffic_perm is None:
+            rng = np.random.RandomState(None)
+            self._traffic_perm = rng.permutation(self._traffic_masks.shape[0])
+        return int(self._traffic_perm[idx % self._traffic_perm.shape[0]])
 
     def _resolve_shard_path(self, shard_id: int) -> str:
         cand = [
@@ -294,7 +385,16 @@ class WidarDigitShardDataset(Dataset):
         x_original = x.copy()
         mask = np.ones((x.shape[0],), dtype=np.float32)
 
-        if self.sample_rate < 1.0 or self.use_mask_0:
+        if self.sample_method == "trafficlike":
+            mask_idx = self._pick_traffic_mask_index(idx)
+            mask_1d = self._traffic_masks[mask_idx]
+            if mask_1d.shape[0] != x.shape[0]:
+                raise ValueError(f"traffic mask length {mask_1d.shape[0]} != T {x.shape[0]}")
+            mask = mask_1d.astype(np.float32, copy=False)[:, None]
+            if x.shape[1] != 1:
+                mask = np.repeat(mask, x.shape[1], axis=1)
+            x = x * mask
+        elif self.sample_rate < 1.0 or self.use_mask_0:
             x, mask = resample_signal_data(
                 x,
                 sample_rate=self.sample_rate,

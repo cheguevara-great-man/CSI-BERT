@@ -41,6 +41,8 @@ def get_args():
     parser.add_argument('--sample_method', type=str, default="equidistant")
     parser.add_argument('--interpolation_method', type=str, default="linear")
     parser.add_argument('--use_mask_0', type=int, default=1)
+    parser.add_argument('--traffic_train_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/train.pt')
+    parser.add_argument('--traffic_test_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/test.pt')
     args = parser.parse_args()
     return args
 
@@ -79,6 +81,8 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
+        traffic_train_pt=args.traffic_train_pt,
+        traffic_test_pt=args.traffic_test_pt,
     )
     valid_data=Widar_digit_amp_dataset(
         root_dir=args.data_path,
@@ -88,7 +92,13 @@ def main():
         interpolation_method=args.interpolation_method,
         use_mask_0=args.use_mask_0,
         is_rec=1,
+        traffic_train_pt=args.traffic_train_pt,
+        traffic_test_pt=args.traffic_test_pt,
     )
+    if hasattr(valid_data, "set_rate_filter"):
+        valid_data.set_rate_filter(None)
+    if hasattr(valid_data, "set_eval_subset"):
+        valid_data.set_eval_subset(len(valid_data), seed=0)
     # train_data,valid_data=load_data(train_prop=0.1)
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False,num_workers=4)
     valid_loader = DataLoader(valid_data, batch_size=args.batch_size, shuffle=False,num_workers=2)
@@ -106,6 +116,8 @@ def main():
     j = 0
     while True:
         j+=1
+        if hasattr(train_data, "set_epoch"):
+            train_data.set_epoch(j)
         model.train()
         torch.set_grad_enabled(True)
         loss_list=[]
